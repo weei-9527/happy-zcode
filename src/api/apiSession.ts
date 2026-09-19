@@ -1,12 +1,13 @@
 import { logger } from '@/ui/logger'
 import { EventEmitter } from 'node:events'
 import { io, Socket } from 'socket.io-client'
+import axios from 'axios'
 import { AgentState, ClientToServerEvents, MessageContent, Metadata, ServerToClientEvents, Session, Update, UserMessage, UserMessageSchema, Usage } from './types'
 import { decodeBase64, decrypt, encodeBase64, encrypt } from './encryption';
 import { backoff } from '@/utils/time';
 import { configuration } from '@/configuration';
 import { RawJSONLines } from '@/claude/types';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLock } from '@/utils/lock';
 import { RpcHandlerManager } from './rpc/RpcHandlerManager';
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers';
@@ -184,6 +185,55 @@ export class ApiSessionClient extends EventEmitter {
         while (this.pendingMessages.length > 0) {
             callback(this.pendingMessages.shift()!);
         }
+    }
+
+    /**
+     * Fetch and decrypt recent session messages over REST.
+     *
+     * Used by backends that support session catch-up: messages received while
+     * the CLI was offline are stored server-side and never replayed over the
+     * socket, so the only way to see them is this endpoint.
+     *
+     * Returns messages ordered by seq (oldest first). `body` is normalized
+     * through UserMessageSchema when possible so it matches what the live
+     * socket path delivers; `key` is a stable dedupe key for the message.
+     */
+    async fetchRecentMessages(limit = 50): Promise<Array<{
+        id: string;
+        seq: number;
+        createdAt: number;
+        body: unknown;
+        key: string;
+    }>> {
+        const response = await axios.get(
+            `${configuration.serverUrl}/v1/sessions/${this.sessionId}/messages`,
+            {
+                headers: { 'Authorization': `Bearer ${this.token}` },
+                timeout: 30000
+            }
+        );
+        const rawMessages: Array<{ id: string; seq: number; createdAt: number; content?: { t?: string; c?: string } }> =
+            response.data?.messages ?? [];
+        const result: Array<{ id: string; seq: number; createdAt: number; body: unknown; key: string }> = [];
+        for (const message of rawMessages) {
+            if (message.content?.t !== 'encrypted' || typeof message.content.c !== 'string') continue;
+            try {
+                const body = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(message.content.c));
+                const normalized = UserMessageSchema.safeParse(body);
+                // Normalize so live-socket and REST copies of the same message stringify identically
+                const canonical = normalized.success ? normalized.data : body;
+                result.push({
+                    id: message.id,
+                    seq: message.seq,
+                    createdAt: message.createdAt,
+                    body: canonical,
+                    key: createHash('sha256').update(JSON.stringify(canonical)).digest('hex'),
+                });
+            } catch (error) {
+                logger.debug('[API] Failed to decrypt session message during catch-up:', error);
+            }
+        }
+        return result.sort((a, b) => a.seq - b.seq).slice(-limit);
     }
 
     /**

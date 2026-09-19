@@ -28,6 +28,14 @@ const ssh = (cmd, opts = '') => execSync(`ssh ${opts} ${sshArgs()} ${sshQuote(NA
 function log(msg) { console.log(`[sim ${new Date().toISOString().slice(11, 19)}] ${msg}`); }
 
 async function provisionAccount() {
+    // Safety: never clobber real credentials on the NAS unless explicitly asked
+    if (process.env.SIM_OVERWRITE !== '1') {
+        let exists = '';
+        try { exists = ssh('test -f ~/.happy/access.key && echo PRESENT || echo ABSENT'); } catch { /* assume absent */ }
+        if (exists.includes('PRESENT')) {
+            throw new Error('Refusing to overwrite ~/.happy/access.key on the NAS (real credentials?). Set SIM_OVERWRITE=1 to force.');
+        }
+    }
     const seed = randomBytes(32);
     const signPair = tweetnacl.sign.keyPair.fromSeed(seed);
     const challenge = randomBytes(32);

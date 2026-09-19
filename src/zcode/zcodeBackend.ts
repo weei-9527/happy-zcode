@@ -243,6 +243,22 @@ export class ZcodeBackend implements AgentBackend {
         this.zcodeSessionId = null;
     }
 
+    /** The persisted zcode session id captured from the first turn, if any. */
+    get currentZcodeSessionId(): string | null {
+        return this.zcodeSessionId;
+    }
+
+    /**
+     * Reuse a zcode session id from a previous bridge run so conversation
+     * context survives bridge restarts.
+     */
+    restoreSession(id: string): void {
+        if (this.currentTurn) {
+            throw new Error('Cannot restore a session while a turn is in progress');
+        }
+        this.zcodeSessionId = id;
+    }
+
     async cancel(_sessionId: SessionId): Promise<void> {
         const turn = this.currentTurn;
         const child = this.child;

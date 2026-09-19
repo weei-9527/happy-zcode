@@ -7,12 +7,16 @@
  * so conversation context lives inside zcode, not here.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import os from 'node:os';
 
 import { ApiClient } from '@/api/api';
+import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { logger } from '@/ui/logger';
 import { Credentials, readSettings } from '@/persistence';
+import { configuration } from '@/configuration';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { initialMachineMetadata } from '@/daemon/run';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
@@ -29,6 +33,43 @@ import { mapPermissionModeToZcode, ZCODE_DEFAULT_COMMAND } from './constants';
 import type { ZcodeMode } from './types';
 
 /**
+ * Persistent bridge state: keeps the same Happy session (and zcode
+ * conversation) across bridge restarts. Delete the file to start fresh.
+ */
+interface ZcodeBridgeState {
+    sessionTag: string;
+    /** base64 session encryption key (dataKey credentials); required to keep
+     *  the reused session's stored content decryptable across restarts. */
+    sessionKey?: string;
+    happySessionId?: string;
+    zcodeSessionId?: string;
+}
+
+function bridgeStateFile(): string {
+    return join(configuration.happyHomeDir, 'zcode-bridge-state.json');
+}
+
+function loadBridgeState(): ZcodeBridgeState {
+    try {
+        if (existsSync(bridgeStateFile())) {
+            const parsed = JSON.parse(readFileSync(bridgeStateFile(), 'utf8'));
+            if (parsed && typeof parsed.sessionTag === 'string') return parsed;
+        }
+    } catch (error) {
+        logger.debug('[zcode] Failed to read bridge state:', error);
+    }
+    return { sessionTag: randomUUID() };
+}
+
+function saveBridgeState(state: ZcodeBridgeState): void {
+    try {
+        writeFileSync(bridgeStateFile(), JSON.stringify(state, null, 2));
+    } catch (error) {
+        logger.debug('[zcode] Failed to save bridge state:', error);
+    }
+}
+
+/**
  * Main entry point for the zcode command
  */
 export async function runZcode(opts: {
@@ -36,10 +77,9 @@ export async function runZcode(opts: {
     startedBy?: 'daemon' | 'terminal';
     zcodeCommand?: string;
 }): Promise<void> {
-    const sessionTag = randomUUID();
-    connectionState.setBackend('Zcode');
-
-    const api = await ApiClient.create(opts.credentials);
+    const bridgeState = loadBridgeState();
+    const sessionTag = bridgeState.sessionTag;
+    connectionState.setBackend('Zcode');    const api = await ApiClient.create(opts.credentials);
 
     //
     // Machine
@@ -66,7 +106,30 @@ export async function runZcode(opts: {
         machineId,
         startedBy: opts.startedBy
     });
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+
+    // Reuse the persisted session encryption key so a restarted bridge can
+    // still decrypt content stored in the session by earlier runs
+    const isDataKeyCredentials = opts.credentials.encryption.type === 'dataKey';
+    const storedKey = isDataKeyCredentials && bridgeState.sessionKey
+        ? decodeBase64(bridgeState.sessionKey)
+        : undefined;
+
+    let response = await api.getOrCreateSession({ tag: sessionTag, metadata, state, encryptionKey: storedKey });
+    if (response && response.metadata === null && storedKey) {
+        // The stored key doesn't decrypt this session (e.g. the account changed
+        // after the state file was written) — abandon it and start fresh
+        logger.debug('[zcode] Stored session key does not match the session; starting a fresh session');
+        delete bridgeState.sessionKey;
+        delete bridgeState.zcodeSessionId;
+        bridgeState.sessionTag = randomUUID();
+        saveBridgeState(bridgeState);
+        response = await api.getOrCreateSession({ tag: bridgeState.sessionTag, metadata, state });
+    }
+    if (response && isDataKeyCredentials && response.encryptionKey) {
+        bridgeState.sessionKey = encodeBase64(response.encryptionKey);
+    }
+    bridgeState.happySessionId = response?.id;
+    saveBridgeState(bridgeState);
 
     let session: ApiSessionClient;
     let isProcessingMessage = false;
@@ -86,6 +149,9 @@ export async function runZcode(opts: {
         metadata,
         state,
         response,
+        encryptionKey: isDataKeyCredentials && bridgeState.sessionKey
+            ? decodeBase64(bridgeState.sessionKey)
+            : undefined,
         onSessionSwap: (newSession) => {
             if (isProcessingMessage) {
                 logger.debug('[zcode] Session swap requested during message processing - queueing');
@@ -111,7 +177,51 @@ export async function runZcode(opts: {
 
     let currentPermissionMode: PermissionMode | undefined = undefined;
 
+    //
+    // Catch-up: messages sent while the bridge was offline are stored on the
+    // server but never replayed over the socket. Fetch them and queue any
+    // unanswered trailing user messages. Keys dedupe against live delivery.
+    //
+
+    const knownMessageKeys = new Set<string>();
+    try {
+        const recent = await session.fetchRecentMessages(50);
+        let lastAgentIndex = -1;
+        for (let i = recent.length - 1; i >= 0; i--) {
+            if ((recent[i].body as { role?: string } | null)?.role === 'agent') {
+                lastAgentIndex = i;
+                break;
+            }
+        }
+        for (const entry of recent) {
+            knownMessageKeys.add(entry.key);
+            if (entry.id) {
+                knownMessageKeys.add(`id:${entry.id}`);
+            }
+        }
+        let replayed = 0;
+        for (let i = lastAgentIndex + 1; i < recent.length; i++) {
+            const body = recent[i].body as { role?: string; content?: { text?: string } } | null;
+            const text = body?.content?.text;
+            if (body?.role === 'user' && typeof text === 'string' && text.trim().length > 0) {
+                replayed++;
+                messageQueue.push(text, { permissionMode: 'default', originalUserMessage: text });
+            }
+        }
+        if (replayed > 0) {
+            console.log(`[zcode] Replaying ${replayed} message(s) sent while the bridge was offline`);
+        }
+    } catch (error) {
+        logger.debug('[zcode] Catch-up fetch failed (continuing without replay):', error);
+    }
+
     session.onUserMessage((message) => {
+        const dedupeKey = createHash('sha256').update(JSON.stringify(message)).digest('hex');
+        if (knownMessageKeys.has(dedupeKey)) {
+            logger.debug('[zcode] Skipping message already handled during catch-up');
+            return;
+        }
+        knownMessageKeys.add(dedupeKey);
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
             const validModes: PermissionMode[] = ['default', 'read-only', 'safe-yolo', 'yolo'];
@@ -173,6 +283,10 @@ export async function runZcode(opts: {
         cwd: process.cwd(),
         command: opts.zcodeCommand,
     });
+    if (bridgeState.zcodeSessionId) {
+        logger.debug(`[zcode] Restoring zcode session ${bridgeState.zcodeSessionId} from previous run`);
+        backend.restoreSession(bridgeState.zcodeSessionId);
+    }
 
     let accumulatedResponse = '';
     let responseStarted = false;
@@ -298,6 +412,8 @@ export async function runZcode(opts: {
                 if (message.isolate) {
                     logger.debug('[zcode] Isolated message requested - starting a fresh zcode session');
                     await backend.resetSession();
+                    delete bridgeState.zcodeSessionId;
+                    saveBridgeState(bridgeState);
                 }
 
                 logger.debug(`[zcode] Sending prompt (length: ${message.message.length})`);
@@ -330,6 +446,12 @@ export async function runZcode(opts: {
                     type: 'task_complete',
                     id: randomUUID(),
                 });
+
+                const zcodeSessionId = backend.currentZcodeSessionId;
+                if (zcodeSessionId && zcodeSessionId !== bridgeState.zcodeSessionId) {
+                    bridgeState.zcodeSessionId = zcodeSessionId;
+                    saveBridgeState(bridgeState);
+                }
 
                 thinking = false;
                 session.keepAlive(thinking, 'remote');

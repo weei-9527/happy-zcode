@@ -30,7 +30,11 @@ export class ApiClient {
   async getOrCreateSession(opts: {
     tag: string,
     metadata: Metadata,
-    state: AgentState | null
+    state: AgentState | null,
+    /** Reuse a previously generated session encryption key (dataKey credentials).
+     *  Required when reconnecting to an existing session whose stored content
+     *  was encrypted with the key from an earlier run. */
+    encryptionKey?: Uint8Array
   }): Promise<Session | null> {
 
     // Resolve encryption key
@@ -39,8 +43,9 @@ export class ApiClient {
     let encryptionVariant: 'legacy' | 'dataKey';
     if (this.credential.encryption.type === 'dataKey') {
 
-      // Generate new encryption key
-      encryptionKey = getRandomBytes(32);
+      // Reuse the provided key so content written by a previous run of the
+      // same session stays decryptable; generate a fresh one otherwise
+      encryptionKey = opts.encryptionKey ?? getRandomBytes(32);
       encryptionVariant = 'dataKey';
 
       // Derive and encrypt data encryption key
