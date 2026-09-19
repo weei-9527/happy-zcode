@@ -15,12 +15,13 @@ NAS 上已经装好的东西：
 - `~/.local/bin/happy` —— 启动脚本（用 ZCode 自带 Electron 的 node 跑 happy-cli，
   因为 NAS 上没有独立 node；自动带上 `ZCODE_COMMAND` 指向 zcode CLI）
 - `~/.local/bin/zcode` —— 你之前（codex 装的）zcode CLI，负责真正干活
+- `~/.config/systemd/user/happy-zcode.service` —— 常驻服务定义（见下）
 
 首次使用（用真实手机配对）：
 
 ```sh
 # SSH 到 NAS 后执行（需要 TTY，用 ssh -t 或直接在终端里跑）
-rm ~/.happy/access.key      # 清掉我测试用的临时账号凭据
+rm ~/.happy/access.key      # 清掉测试用的临时账号凭据
 happy zcode
 ```
 
@@ -28,6 +29,26 @@ happy zcode
 配对成功后终端显示 "Happy Zcode bridge active"。
 
 之后在手机 App 里点进这个会话（或对终端扫描配对新会话）直接发消息即可。
+
+## 常驻运行（重要）
+
+`happy zcode` 在前台运行时，**关闭 SSH 终端进程就会退出**，手机发的消息将无人
+接收。推荐二选一：
+
+```sh
+# 方式 A（无需 root，推荐）：临时后台运行，断开 SSH 后继续存活
+cd ~/zcode-test && setsid nohup happy zcode > /tmp/happy-zcode-cli.log 2>&1 < /dev/null &
+
+# 方式 B（一次性 sudo 配置后开机自启、崩溃自动重启）：
+sudo loginctl enable-linger $USER     # 只需执行一次
+systemctl --user enable --now happy-zcode
+journalctl --user -u happy-zcode -f   # 看日志
+```
+
+**重启健壮性**（已内置）：桥接状态存在 `~/.happy/zcode-bridge-state.json`
+（Happy 会话 tag、会话加密密钥、zcode 会话 id）。桥重启后会回到**同一个**
+Happy 会话、继续同一段 zcode 对话；掉线期间手机发的消息会在启动时通过 REST
+补收并逐条处理。删掉这个状态文件即可开一段全新会话。
 
 ## 工作原理
 
