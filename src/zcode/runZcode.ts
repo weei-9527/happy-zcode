@@ -31,6 +31,10 @@ import type { PermissionMode } from '@/claude/loop';
 import { ZcodeBackend } from './zcodeBackend';
 import { mapPermissionModeToZcode, ZCODE_DEFAULT_COMMAND } from './constants';
 import type { ZcodeMode } from './types';
+// Wire-format note: agent messages go out with provider 'codex' because the
+// mobile app's ACP schema (typesRaw.ts) only accepts gemini/codex/claude/opencode.
+// The session metadata keeps flavor 'zcode', which the app displays as-is.
+
 
 /**
  * Persistent bridge state: keeps the same Happy session (and zcode
@@ -222,6 +226,32 @@ export async function runZcode(opts: {
             return;
         }
         knownMessageKeys.add(dedupeKey);
+
+        // Phone-side "new conversation": there is no zcode entry in the app's
+        // agent picker, so /new in chat is how a fresh zcode session starts
+        const trimmed = message.content.text?.trim();
+        if (trimmed === '/new') {
+            void (async () => {
+                try {
+                    if (thinking || isProcessingMessage) {
+                        await handleAbort();
+                        await new Promise((resolve) => setTimeout(resolve, 100));
+                    }
+                    backend.resetSession();
+                    delete bridgeState.zcodeSessionId;
+                    saveBridgeState(bridgeState);
+                    console.log('[zcode] /new: started a fresh zcode session');
+                    session.sendAgentMessage('codex', {
+                        type: 'message',
+                        message: '已开启全新的 zcode 会话，之前的对话上下文已清除。',
+                    });
+                } catch (error) {
+                    logger.debug('[zcode] /new failed:', error);
+                }
+            })();
+            return;
+        }
+
         let messagePermissionMode = currentPermissionMode;
         if (message.meta?.permissionMode) {
             const validModes: PermissionMode[] = ['default', 'read-only', 'safe-yolo', 'yolo'];
@@ -299,7 +329,7 @@ export async function runZcode(opts: {
             if (msg.textDelta !== undefined) {
                 responseStarted = true;
                 // Live progress while zcode streams its response
-                session.sendAgentMessage('zcode', {
+                session.sendAgentMessage('codex', {
                     type: 'thinking',
                     text: delta,
                 });
@@ -314,7 +344,7 @@ export async function runZcode(opts: {
     async function handleAbort() {
         logger.debug('[zcode] Abort requested - stopping current turn');
 
-        session.sendAgentMessage('zcode', {
+        session.sendAgentMessage('codex', {
             type: 'turn_aborted',
             id: randomUUID(),
         });
@@ -392,7 +422,7 @@ export async function runZcode(opts: {
             isProcessingMessage = true;
             thinking = true;
             session.keepAlive(thinking, 'remote');
-            session.sendAgentMessage('zcode', {
+            session.sendAgentMessage('codex', {
                 type: 'task_started',
                 id: randomUUID(),
             });
@@ -426,7 +456,7 @@ export async function runZcode(opts: {
                 } else {
                     const errorMsg = error instanceof Error ? error.message : String(error);
                     console.error(`[zcode] Turn failed: ${errorMsg}`);
-                    session.sendAgentMessage('zcode', {
+                    session.sendAgentMessage('codex', {
                         type: 'message',
                         message: `Error: ${errorMsg}`,
                     });
@@ -434,7 +464,7 @@ export async function runZcode(opts: {
             } finally {
                 if (accumulatedResponse.trim()) {
                     logger.debug(`[zcode] Sending complete message to mobile (length: ${accumulatedResponse.length})`);
-                    session.sendAgentMessage('zcode', {
+                    session.sendAgentMessage('codex', {
                         type: 'message',
                         message: accumulatedResponse,
                     });
@@ -442,7 +472,7 @@ export async function runZcode(opts: {
                     responseStarted = false;
                 }
 
-                session.sendAgentMessage('zcode', {
+                session.sendAgentMessage('codex', {
                     type: 'task_complete',
                     id: randomUUID(),
                 });
