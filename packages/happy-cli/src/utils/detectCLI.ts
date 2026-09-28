@@ -10,6 +10,7 @@ export interface CLIAvailability {
   gemini: boolean;
   openclaw: boolean;
   agy: boolean;
+  zcode: boolean;
   detectedAt: number;
 }
 
@@ -47,7 +48,10 @@ function detectPosix(): CLIAvailability {
   const openclawEnv = !!process.env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, detectedAt: Date.now() };
+  // ZCode: check command on PATH or an explicit ZCODE_COMMAND override
+  const zcode = commandExists('zcode') || !!process.env.ZCODE_COMMAND;
+
+  return { claude, codex, gemini, openclaw, agy, zcode, detectedAt: Date.now() };
 }
 
 function detectWindows(): CLIAvailability {
@@ -71,5 +75,8 @@ function detectWindows(): CLIAvailability {
   const openclawEnv = !!process.env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, detectedAt: Date.now() };
+  // ZCode: check command on PATH or an explicit ZCODE_COMMAND override
+  const zcode = checkCommand('zcode') || !!process.env.ZCODE_COMMAND;
+
+  return { claude, codex, gemini, openclaw, agy, zcode, detectedAt: Date.now() };
 }

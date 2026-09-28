@@ -240,6 +240,18 @@ export function getAgyPermissionModes(translate: Translate): PermissionMode[] {
     ];
 }
 
+// zcode --mode only accepts build / edit / yolo. Happy's shared mode keys are
+// mapped by the CLI fork (mapPermissionModeToZcode): auto->build,
+// safe-yolo->edit, yolo->yolo. Only these three are offered, in zcode's own
+// wording, so nothing on the picker is inert.
+export function getZcodePermissionModes(_translate: Translate): PermissionMode[] {
+    return [
+        { key: 'yolo', name: 'Yolo', description: 'Full auto: no confirmation at all' },
+        { key: 'safe-yolo', name: 'Edit', description: 'Confirms before changes' },
+        { key: 'auto', name: 'Build', description: 'Default workflow mode' },
+    ];
+}
+
 // Before the release tagged above the CLI's MessageMetaSchema rejected `auto`,
 // and a rejected mode dropped the whole prompt — the same failure mode
 // `dontAsk` had.
@@ -319,6 +331,9 @@ export function getHardcodedPermissionModes(flavor: AgentFlavor, translate: Tran
     if (flavor === 'agy') {
         return getAgyPermissionModes(translate);
     }
+    if (flavor === 'zcode') {
+        return getZcodePermissionModes(translate);
+    }
     return getClaudePermissionModes(translate);
 }
 
@@ -340,6 +355,12 @@ export function getAgyModelModes(): ModelMode[] {
     ];
 }
 
+export function getZcodeModelModes(): ModelMode[] {
+    return [
+        { key: 'default', name: 'Default model', description: null },
+    ];
+}
+
 export function getHardcodedModelModes(flavor: AgentFlavor, _translate: Translate): ModelMode[] {
     if (flavor === 'codex') {
         return getCodexModelModes();
@@ -352,6 +373,9 @@ export function getHardcodedModelModes(flavor: AgentFlavor, _translate: Translat
     }
     if (flavor === 'agy') {
         return getAgyModelModes();
+    }
+    if (flavor === 'zcode') {
+        return getZcodeModelModes();
     }
     return getClaudeModelModes();
 }

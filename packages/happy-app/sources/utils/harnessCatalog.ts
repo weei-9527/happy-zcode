@@ -12,6 +12,7 @@ export const HARNESS_NAMES: Record<NewSessionAgentType, string> = {
     agy: 'Antigravity',
     gemini: 'Gemini',
     openclaw: 'OpenClaw',
+    zcode: 'ZCode',
 };
 
 /**
@@ -33,6 +34,7 @@ export const HARNESS_ORDER: readonly NewSessionAgentType[] = [
     'claude',
     'codex',
     'agy',
+    'zcode',
     'rig',
 ];
 
@@ -65,6 +67,8 @@ export function isHarnessAvailable({
     // Antigravity is niche enough that an old or incomplete capability report
     // must not advertise it speculatively. Its daemon has to say it is installed.
     if (key === 'agy') return availability?.agy === true;
+    // ZCode is a fork-only harness: only a CLI that reports it may offer it.
+    if (key === 'zcode') return availability?.zcode === true;
     return !availability || availability[key] === true;
 }
 

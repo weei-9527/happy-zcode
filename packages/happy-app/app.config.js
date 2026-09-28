@@ -4,12 +4,14 @@ const variant = process.env.APP_ENV || 'development';
 const name = {
     development: "Happy (dev)",
     preview: "Happy (preview)",
-    production: "Happy"
+    production: "Happy",
+    zcode: "Happy ZCode"
 }[variant];
 const bundleId = {
     development: "com.slopus.happy.dev",
     preview: "com.slopus.happy.preview",
-    production: "com.ex3ndr.happy"
+    production: "com.ex3ndr.happy",
+    zcode: "com.weei.happy.zcode"
 }[variant];
 // const stagingElevenLabsAgentId = 'agent_7801k2c0r5hjfraa1kdbytpvs6yt';
 const productionElevenLabsAgentId = 'agent_6701k211syvvegba4kt7m68nxjmw';
@@ -17,11 +19,13 @@ const elevenLabsAgentId = {
     development: productionElevenLabsAgentId,
     preview: productionElevenLabsAgentId,
     production: productionElevenLabsAgentId,
+    zcode: productionElevenLabsAgentId,
 }[variant];
 const consoleLoggingDefault = {
     development: true,
     preview: true,
     production: false,
+    zcode: true,
 }[variant];
 
 function git(args) {

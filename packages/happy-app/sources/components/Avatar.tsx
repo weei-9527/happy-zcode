@@ -31,6 +31,7 @@ const harnessIcons: Record<AvatarHarnessIcon, number> = {
     claude: require('@/assets/images/icon-claude.png'),
     codex: require('@/assets/images/icon-gpt.png'),
     agy: require('@/assets/images/icon-agy.png'),
+    zcode: require('@/assets/images/icon-zcode.png'),
     rig: require('@/assets/images/logo-black.png'),
 };
 
